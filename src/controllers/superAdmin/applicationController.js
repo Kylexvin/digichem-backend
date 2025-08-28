@@ -1,198 +1,403 @@
 import Application from '../../models/Application.js';
 import Pharmacy from '../../models/Pharmacy.js';
 import User from '../../models/User.js';
-import { generateSubdomain, generateRandomPassword } from '../../utils/generateToken.js';
+// import { generateSubdomain, generateRandomPassword } from '../../utils/generateToken.js';
 import { validationResult } from 'express-validator';
+import mongoose from 'mongoose';
 
+
+/**
+ * Helper function to generate subdomain from pharmacy name
+ */
+const generateSubdomain = (pharmacyName) => {
+  return pharmacyName
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '') // Remove special characters
+    .replace(/\s+/g, '-') // Replace spaces with hyphens
+    .replace(/-+/g, '-') // Replace multiple hyphens with single
+    .replace(/^-|-$/g, '') // Remove leading/trailing hyphens
+    .substring(0, 50); // Limit length
+};
 
 /**
  * Submit new pharmacy application
  * POST /api/applications/submit
  */
+
 export const submitApplication = async (req, res) => {
+  const session = await mongoose.startSession();
+  
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Validation failed',
-        errors: errors.array()
-      });
-    }
-
-    const applicationData = req.body;
-
-    // Check if application already exists with same email
-    const existingApplication = await Application.findOne({
-      'owner.email': applicationData.owner.email,
-      status: { $in: ['pending', 'under_review', 'approved'] }
-    });
-
-    if (existingApplication) {
-      return res.status(400).json({
-        success: false,
-        message: existingApplication.status === 'approved'
-          ? 'A pharmacy is already registered with this email'
-          : 'An application with this email is already pending review'
-      });
-    }
-
-    // Create new application
-    const application = new Application(applicationData);
-    await application.save();
-
-    res.status(201).json({
-      success: true,
-      message: 'Application submitted successfully',
-      application: {
-        id: application._id,
-        applicationId: application.applicationId,
-        pharmacyName: application.pharmacyName,
-        ownerName: application.fullOwnerName,
-        status: application.status,
-        submittedAt: application.submittedAt
+    await session.withTransaction(async () => {
+      // 1. Check for validation errors
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Validation failed',
+          errors: errors.array()
+        });
       }
-    });
 
+      const applicationData = req.body;
+
+      // 2. Check if application already exists with same email
+      const existingApplication = await Application.findOne({
+        'owner.email': applicationData.owner.email,
+        status: { $in: ['pending', 'approved'] }
+      }).session(session);
+
+      if (existingApplication) {
+        throw {
+          code: 'DUPLICATE_EMAIL',
+          message: existingApplication.status === 'approved'
+            ? 'A pharmacy is already registered with this email address'
+            : 'An application with this email is already pending review'
+        };
+      }
+
+      // 3. Check if pharmacy name would create conflicting subdomain
+      const potentialSubdomain = generateSubdomain(applicationData.pharmacyName);
+      const existingPharmacy = await Pharmacy.findOne({ subdomain: potentialSubdomain }).session(session);
+      
+      if (existingPharmacy) {
+        throw {
+          code: 'DUPLICATE_PHARMACY',
+          message: 'A pharmacy with a similar name already exists. Please choose a different pharmacy name.',
+          suggestedAlternatives: [
+            `${applicationData.pharmacyName} Pharmacy`,
+            `${applicationData.pharmacyName} Plus`,
+            `${applicationData.pharmacyName} Care`
+          ]
+        };
+      }
+
+      // 4. Create user first (with pending status)
+      const userData = {
+        firstName: applicationData.owner.firstName,
+        lastName: applicationData.owner.lastName,
+        email: applicationData.owner.email.toLowerCase(),
+        phone: applicationData.owner.phone,
+        role: 'pharmacy_owner',
+        status: 'pending', // Will be activated when application is approved
+        isEmailVerified: false,
+        password: applicationData.owner.password
+      };
+
+      const user = await User.create([userData], { session });
+      
+      // 5. Create application (without password in owner field)
+      const applicationDataWithoutPassword = {
+        ...applicationData,
+        owner: {
+          firstName: applicationData.owner.firstName,
+          lastName: applicationData.owner.lastName,
+          email: applicationData.owner.email.toLowerCase(),
+          phone: applicationData.owner.phone
+        },
+        createdUserId: user[0]._id
+      };
+
+      const application = await Application.create([applicationDataWithoutPassword], { session });
+
+      // 6. Send success response
+      res.status(201).json({
+        success: true,
+        message: 'Application submitted successfully! We will review your application within 3-5 business days.',
+        data: {
+          application: {
+            id: application[0]._id,
+            applicationId: application[0].applicationId,
+            pharmacyName: application[0].pharmacyName,
+            ownerName: `${application[0].owner.firstName} ${application[0].owner.lastName}`,
+            status: application[0].status,
+            submittedAt: application[0].submittedAt,
+            estimatedReviewTime: '3-5 business days'
+          },
+          user: {
+            id: user[0]._id,
+            email: user[0].email,
+            status: user[0].status,
+            message: 'User account created (inactive until approval)'
+          }
+        },
+        nextSteps: [
+          'Your application is now under review',
+          'You will receive an email once your application is processed',
+          'If approved, you can log in with the password you set during application',
+          'Keep your application ID for reference: ' + application[0].applicationId
+        ]
+      });
+    });
   } catch (error) {
     console.error('Application submission error:', error);
 
-    if (error.code === 11000) {
+    // Handle custom errors
+    if (error.code === 'DUPLICATE_EMAIL' || error.code === 'DUPLICATE_PHARMACY') {
       return res.status(400).json({
         success: false,
-        message: 'Email already exists'
+        message: error.message,
+        suggestions: error.suggestedAlternatives
       });
     }
 
+    // Handle MongoDB duplicate key errors
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      let message = 'This information already exists in our system';
+      
+      if (field.includes('email')) {
+        message = 'An account with this email address already exists';
+      }
+      
+      return res.status(400).json({ success: false, message, field });
+    }
+
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map(err => ({
+        field: err.path,
+        message: err.message
+      }));
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Application data validation failed',
+        errors: validationErrors
+      });
+    }
+
+    // Generic fallback
     res.status(500).json({
       success: false,
-      message: 'Failed to submit application',
+      message: 'Failed to submit application. Please try again later.',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
+  } finally {
+    await session.endSession();
   }
 };
-
-
 /**
- * Get all applications (Super Admin only)
- * GET /api/applications
+ * Approve a pending pharmacy application
+ * POST /api/applications/:id/approve
  */
-export const getAllApplications = async (req, res) => {
+export const approveApplication = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { 
-      page = 1, 
-      limit = 10, 
-      status, 
-      search,
-      sortBy = 'submittedAt',
-      sortOrder = 'desc'
-    } = req.query;
+    const { id } = req.params;
 
-    let query = {};
+    // Find application with createdUserId populated
+    const application = await Application.findById(id)
+      .populate('createdUserId')
+      .session(session);
 
-    // Filter by status if provided
-    if (status && status !== 'all') {
-      query.status = status;
-    }
-
-    // Search functionality
-    if (search) {
-      query = await Application.searchApplications(search, query);
-      // Since searchApplications returns a query object, we need to extract the find conditions
-      const searchResults = await query;
-      return res.json({
-        success: true,
-        applications: searchResults,
-        pagination: {
-          currentPage: parseInt(page),
-          totalPages: Math.ceil(searchResults.length / parseInt(limit)),
-          totalApplications: searchResults.length,
-          hasNext: parseInt(page) * parseInt(limit) < searchResults.length,
-          hasPrev: parseInt(page) > 1
-        }
+    if (!application) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: 'Application not found'
       });
     }
 
-    // Regular pagination query
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const sortOptions = {};
-    sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    if (application.status !== 'pending') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Application already processed'
+      });
+    }
 
-    const [applications, totalCount] = await Promise.all([
-      Application.find(query)
-        .sort(sortOptions)
-        .skip(skip)
-        .limit(parseInt(limit))
-        .populate('reviewedBy', 'firstName lastName email')
-        .lean(),
-      Application.countDocuments(query)
-    ]);
+    // Generate subdomain from pharmacy name
+    const subdomain = generateSubdomain(application.pharmacyName);
 
-    res.json({
+    // Create Pharmacy with required subscription data
+    const newPharmacy = new Pharmacy({
+      name: application.pharmacyName,
+      subdomain: subdomain,
+      type: application.pharmacyType,
+      ownerId: application.createdUserId._id,
+      address: {
+        street: application.address.street,
+        city: application.address.city,
+        county: application.address.county,
+        postalCode: application.address.postalCode
+      },
+      coordinates: application.coordinates,
+      contact: {
+        phone: application.owner.phone,
+        email: application.owner.email
+      },
+      operatingHours: application.operatingHours,
+      // Required subscription fields - set defaults for approval
+      subscription: {
+        plan: 'STANDARD', // Default plan
+        status: 'active',
+        startDate: new Date(),
+        agreedMonthlyAmount: 2500, // Default amount - should be set by admin
+        initialPayment: {
+          amount: 0, // Can be 0 for now, updated later
+          date: new Date(),
+          method: 'pending',
+          transactionId: `INIT-${Date.now()}`
+        },
+        paymentAgreed: true, // Set to true for approval
+        agreedDate: new Date()
+      },
+      createdFromApplication: application._id,
+      approvedBy: req.user.id,
+      approvedAt: new Date()
+    });
+
+    const savedPharmacy = await newPharmacy.save({ session });
+
+    // Update Application status
+    application.status = 'approved';
+    application.reviewedBy = req.user.id;
+    application.reviewedAt = new Date();
+    application.reviewNotes = 'Application approved successfully';
+    application.createdPharmacyId = savedPharmacy._id;
+    await application.save({ session });
+
+    // Update User (and return fresh doc)
+    const updatedUser = await User.findByIdAndUpdate(
+      application.createdUserId._id,
+      {
+        status: 'active',
+        tenantId: savedPharmacy._id,
+        isEmailVerified: true,
+        lastModifiedBy: req.user.id
+      },
+      { new: true, session }
+    );
+
+    await session.commitTransaction();
+    session.endSession();
+
+    return res.status(200).json({
       success: true,
-      applications: applications.map(app => ({
-        ...app,
-        fullOwnerName: `${app.owner.firstName} ${app.owner.lastName}`,
-        fullAddress: `${app.address.street}, ${app.address.city}, ${app.address.county}`,
-        daysWaiting: Math.floor((new Date() - app.submittedAt) / (1000 * 60 * 60 * 24))
-      })),
-      pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(totalCount / parseInt(limit)),
-        totalApplications: totalCount,
-        hasNext: parseInt(page) * parseInt(limit) < totalCount,
-        hasPrev: parseInt(page) > 1
+      message: 'Application approved successfully',
+      data: {
+        application,
+        pharmacy: savedPharmacy,
+        user: updatedUser
       }
     });
 
   } catch (error) {
-    console.error('Get applications error:', error);
+    await session.abortTransaction();
+    session.endSession();
+    console.error('Error approving application:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to approve application. Please try again.',
+      error: error.message
+    });
+  }
+};
+
+
+/**
+ * Reject a pending pharmacy application
+ * POST /api/applications/:id/reject
+ */
+export const rejectApplication = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    if (!reason || reason.trim().length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rejection reason is required and must be at least 10 characters'
+      });
+    }
+
+    const application = await Application.findById(id).populate('createdUserId');
+    
+    if (!application) {
+      return res.status(404).json({
+        success: false,
+        message: 'Application not found'
+      });
+    }
+
+    if (application.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Application has already been ${application.status}`
+      });
+    }
+
+    // Reject the application
+    const rejectedApplication = await application.reject(req.user.id);
+
+    // Optionally store rejection reason (you might want to add this field to Application model)
+    // rejectedApplication.rejectionReason = reason;
+    // await rejectedApplication.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Application rejected successfully',
+      data: {
+        application: {
+          id: rejectedApplication._id,
+          applicationId: rejectedApplication.applicationId,
+          status: rejectedApplication.status,
+          rejectedAt: rejectedApplication.reviewedAt,
+          reason: reason
+        },
+        owner: {
+          id: application.createdUserId._id,
+          name: application.createdUserId.fullName,
+          email: application.createdUserId.email,
+          status: application.createdUserId.status // Should be 'inactive' after rejection
+        }
+      },
+      nextSteps: [
+        'Applicant has been notified of rejection',
+        'User account has been deactivated',
+        'They can submit a new application if they address the issues',
+        'Rejection reason: ' + reason
+      ]
+    });
+
+  } catch (error) {
+    console.error('Application rejection error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch applications',
+      message: 'Failed to reject application. Please try again.',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 };
 
 /**
- * Get pending applications (Super Admin only)
+ * Get pending applications for admin review
  * GET /api/applications/pending
  */
 export const getPendingApplications = async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
 
-    const applications = await Application.getPendingApplications(parseInt(page), parseInt(limit));
+    const applications = await Application.getPendingApplications(page, limit);
     const totalCount = await Application.countDocuments({ status: 'pending' });
 
-    res.json({
+    res.status(200).json({
       success: true,
-      applications: applications.map(app => ({
-        id: app._id,
-        applicationId: app.applicationId,
-        pharmacyName: app.pharmacyName,
-        pharmacyType: app.pharmacyType,
-        owner: {
-          name: `${app.owner.firstName} ${app.owner.lastName}`,
-          email: app.owner.email,
-          phone: app.owner.phone
-        },
-        address: {
-          full: `${app.address.street}, ${app.address.city}, ${app.address.county}`
-        },
-        licenseNumber: app.licenseNumber,
-        licenseExpiry: app.licenseExpiry,
-        submittedAt: app.submittedAt,
-        daysWaiting: app.daysWaiting,
-        priority: app.priority,
-        estimatedMonthlyRevenue: app.estimatedMonthlyRevenue,
-        numberOfStaff: app.numberOfStaff
-      })),
-      pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(totalCount / parseInt(limit)),
-        totalApplications: totalCount
+      data: {
+        applications,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.ceil(totalCount / limit),
+          totalCount,
+          hasNext: page < Math.ceil(totalCount / limit),
+          hasPrev: page > 1
+        }
       }
     });
 
@@ -207,17 +412,17 @@ export const getPendingApplications = async (req, res) => {
 };
 
 /**
- * Get single application details
+ * Get application details by ID
  * GET /api/applications/:id
  */
-export const getApplication = async (req, res) => {
+export const getApplicationById = async (req, res) => {
   try {
     const { id } = req.params;
-
+    
     const application = await Application.findById(id)
+      .populate('createdUserId', 'firstName lastName email phone status')
       .populate('reviewedBy', 'firstName lastName email')
-      .populate('generatedPharmacyId', 'name subdomain')
-      .populate('generatedOwnerId', 'firstName lastName email');
+      .populate('createdPharmacyId', 'name subdomain websiteUrl status');
 
     if (!application) {
       return res.status(404).json({
@@ -226,375 +431,23 @@ export const getApplication = async (req, res) => {
       });
     }
 
-    res.json({
+    res.status(200).json({
       success: true,
-      application: {
-        ...application.toJSON(),
-        canBeEdited: application.canBeEdited(),
-        missingDocuments: application.getMissingDocuments()
-      }
+      data: { application }
     });
 
   } catch (error) {
     console.error('Get application error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch application',
+      message: 'Failed to fetch application details',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 };
 
-/**
- * Start review process (Super Admin only)
- * PUT /api/applications/:id/start-review
- */
-export const startReview = async (req, res) => {
-  try {
-    const { id } = req.params;
 
-    const application = await Application.findById(id);
 
-    if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: 'Application not found'
-      });
-    }
-
-    if (application.status !== 'pending') {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot start review. Application is currently ${application.status}`
-      });
-    }
-
-    await application.startReview(req.user.id);
-
-    res.json({
-      success: true,
-      message: 'Application review started',
-      application: {
-        id: application._id,
-        status: application.status,
-        reviewedBy: req.user.firstName + ' ' + req.user.lastName,
-        reviewedAt: application.reviewedAt
-      }
-    });
-
-  } catch (error) {
-    console.error('Start review error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to start review',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
-  }
-};
-
-/**
- * Approve application and create pharmacy (Super Admin only)
- * POST /api/applications/:id/approve
- */
-export const approveApplication = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { notes = '' } = req.body;
-
-    const application = await Application.findById(id);
-
-    if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: 'Application not found'
-      });
-    }
-
-    if (!['pending', 'under_review'].includes(application.status)) {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot approve application. Current status: ${application.status}`
-      });
-    }
-
-    // Start transaction-like process
-    try {
-      // 1. Generate unique subdomain
-      const subdomain = generateSubdomain(application.pharmacyName);
-
-      // 2. Create Pharmacy
-      const pharmacy = new Pharmacy({
-        name: application.pharmacyName,
-        subdomain: subdomain,
-        type: application.pharmacyType,
-        licenseNumber: application.licenseNumber,
-        licenseExpiry: application.licenseExpiry,
-        address: application.address,
-        coordinates: application.coordinates,
-        contact: {
-          phone: application.owner.phone,
-          email: application.owner.email
-        },
-        businessRegistration: application.businessRegistration,
-        taxPin: application.taxPin,
-        createdFromApplication: application._id,
-        approvedBy: req.user.id
-      });
-
-      await pharmacy.save();
-
-      // 3. Generate password for pharmacy owner
-      const ownerPassword = generateRandomPassword(12);
-
-      // 4. Create Pharmacy Owner User
-      const pharmacyOwner = await User.createPharmacyOwner({
-        firstName: application.owner.firstName,
-        lastName: application.owner.lastName,
-        email: application.owner.email,
-        phone: application.owner.phone,
-        password: ownerPassword
-      }, pharmacy._id);
-
-      // 5. Update pharmacy with owner ID
-      pharmacy.ownerId = pharmacyOwner._id;
-      await pharmacy.save();
-
-      // 6. Approve application and link created records
-      application.generatedPharmacyId = pharmacy._id;
-      application.generatedOwnerId = pharmacyOwner._id;
-      await application.approve(req.user.id, notes);
-
-      // TODO: Send welcome email to pharmacy owner with login credentials
-      // await sendWelcomeEmail(pharmacyOwner.email, {
-      //   pharmacyName: pharmacy.name,
-      //   subdomain: pharmacy.subdomain,
-      //   email: pharmacyOwner.email,
-      //   password: ownerPassword,
-      //   loginUrl: `https://${pharmacy.subdomain}.kxbyte.com/login`
-      // });
-
-      res.json({
-        success: true,
-        message: 'Application approved successfully',
-        pharmacy: {
-          id: pharmacy._id,
-          name: pharmacy.name,
-          subdomain: pharmacy.subdomain,
-          websiteUrl: pharmacy.websiteUrl,
-          ownerId: pharmacyOwner._id
-        },
-        owner: {
-          id: pharmacyOwner._id,
-          name: pharmacyOwner.fullName,
-          email: pharmacyOwner.email,
-          temporaryPassword: ownerPassword // Remove this in production, send via email only
-        },
-        application: {
-          id: application._id,
-          status: application.status,
-          approvedAt: application.reviewedAt
-        }
-      });
-
-    } catch (creationError) {
-      console.error('Error during pharmacy/owner creation:', creationError);
-      
-      // Cleanup: If pharmacy was created but owner failed, delete pharmacy
-      if (creationError.message.includes('pharmacy') && pharmacy) {
-        await Pharmacy.findByIdAndDelete(pharmacy._id);
-      }
-      
-      throw creationError;
-    }
-
-  } catch (error) {
-    console.error('Approve application error:', error);
-
-    if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
-      return res.status(400).json({
-        success: false,
-        message: `${field.includes('subdomain') ? 'Subdomain' : 'License/Email'} already exists`
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: 'Failed to approve application',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
-  }
-};
-
-/**
- * Reject application (Super Admin only)
- * POST /api/applications/:id/reject
- */
-export const rejectApplication = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { reason, notes = '' } = req.body;
-
-    if (!reason) {
-      return res.status(400).json({
-        success: false,
-        message: 'Rejection reason is required'
-      });
-    }
-
-    const application = await Application.findById(id);
-
-    if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: 'Application not found'
-      });
-    }
-
-    if (!['pending', 'under_review'].includes(application.status)) {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot reject application. Current status: ${application.status}`
-      });
-    }
-
-    await application.reject(req.user.id, reason, notes);
-
-    // TODO: Send rejection email to applicant
-    // await sendRejectionEmail(application.owner.email, {
-    //   pharmacyName: application.pharmacyName,
-    //   reason: reason,
-    //   notes: notes,
-    //   reapplyUrl: `${process.env.FRONTEND_URL}/apply`
-    // });
-
-    res.json({
-      success: true,
-      message: 'Application rejected',
-      application: {
-        id: application._id,
-        status: application.status,
-        rejectionReason: application.rejectionReason,
-        reviewNotes: application.reviewNotes,
-        rejectedAt: application.reviewedAt,
-        rejectedBy: `${req.user.firstName} ${req.user.lastName}`
-      }
-    });
-
-  } catch (error) {
-    console.error('Reject application error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to reject application',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
-  }
-};
-
-/**
- * Mark application as incomplete (Super Admin only)
- * POST /api/applications/:id/incomplete
- */
-export const markIncomplete = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { notes = '' } = req.body;
-
-    const application = await Application.findById(id);
-
-    if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: 'Application not found'
-      });
-    }
-
-    if (!['pending', 'under_review'].includes(application.status)) {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot mark as incomplete. Current status: ${application.status}`
-      });
-    }
-
-    await application.markIncomplete(req.user.id, notes);
-
-    // TODO: Send incomplete application email
-    // await sendIncompleteEmail(application.owner.email, {
-    //   pharmacyName: application.pharmacyName,
-    //   notes: notes,
-    //   missingDocuments: application.getMissingDocuments(),
-    //   editUrl: `${process.env.FRONTEND_URL}/application/edit/${application._id}`
-    // });
-
-    res.json({
-      success: true,
-      message: 'Application marked as incomplete',
-      application: {
-        id: application._id,
-        status: application.status,
-        reviewNotes: application.reviewNotes,
-        followUpRequired: application.followUpRequired,
-        followUpDate: application.followUpDate,
-        missingDocuments: application.getMissingDocuments()
-      }
-    });
-
-  } catch (error) {
-    console.error('Mark incomplete error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to mark application as incomplete',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
-  }
-};
-
-/**
- * Update application priority (Super Admin only)
- * PUT /api/applications/:id/priority
- */
-export const updatePriority = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { priority } = req.body;
-
-    if (!['low', 'normal', 'high', 'urgent'].includes(priority)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid priority level'
-      });
-    }
-
-    const application = await Application.findById(id);
-
-    if (!application) {
-      return res.status(404).json({
-        success: false,
-        message: 'Application not found'
-      });
-    }
-
-    application.priority = priority;
-    await application.save();
-
-    res.json({
-      success: true,
-      message: 'Priority updated successfully',
-      application: {
-        id: application._id,
-        priority: application.priority
-      }
-    });
-
-  } catch (error) {
-    console.error('Update priority error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update priority',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
-  }
-};
 
 /**
  * Get application statistics (Super Admin only)
@@ -748,59 +601,17 @@ export const searchApplications = async (req, res) => {
   }
 };
 
-/**
- * Get applications requiring follow-up (Super Admin only)
- * GET /api/applications/follow-up
- */
-export const getFollowUpApplications = async (req, res) => {
-  try {
-    const applications = await Application.find({
-      followUpRequired: true,
-      followUpDate: { $lte: new Date() },
-      status: 'incomplete'
-    })
-      .sort({ followUpDate: 1 })
-      .populate('reviewedBy', 'firstName lastName email')
-      .limit(50);
 
-    res.json({
-      success: true,
-      applications: applications.map(app => ({
-        id: app._id,
-        applicationId: app.applicationId,
-        pharmacyName: app.pharmacyName,
-        ownerName: `${app.owner.firstName} ${app.owner.lastName}`,
-        ownerEmail: app.owner.email,
-        followUpDate: app.followUpDate,
-        daysPastDue: Math.floor((new Date() - app.followUpDate) / (1000 * 60 * 60 * 24)),
-        reviewNotes: app.reviewNotes,
-        followUpNotes: app.followUpNotes,
-        lastContact: app.reviewedAt
-      })),
-      total: applications.length
-    });
-
-  } catch (error) {
-    console.error('Get follow-up applications error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch follow-up applications',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
-  }
-};
 
 export default {
   submitApplication,
-  getAllApplications,
+
   getPendingApplications,
-  getApplication,
-  startReview,
+ 
   approveApplication,
   rejectApplication,
-  markIncomplete,
-  updatePriority,
+  
   getApplicationStats,
   searchApplications,
-  getFollowUpApplications
+  
 };

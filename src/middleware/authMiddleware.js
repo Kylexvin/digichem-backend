@@ -98,7 +98,7 @@ export const authenticate = async (req, res, next) => {
  * Role-based authorization middleware
  * Usage: authorize(['super_admin', 'pharmacy_owner'])
  */
-export const authorize = (...allowedRoles) => {
+export const authorize = (allowedRoles) => { // Remove the ... spread operator
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({
@@ -107,11 +107,14 @@ export const authorize = (...allowedRoles) => {
       });
     }
     
-    if (!allowedRoles.includes(req.user.role)) {
+    // Ensure allowedRoles is always an array
+    const rolesArray = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
+    
+    if (!rolesArray.includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         message: 'Access denied. Insufficient permissions.',
-        required: allowedRoles,
+        required: rolesArray,
         current: req.user.role
       });
     }

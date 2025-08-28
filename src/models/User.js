@@ -58,20 +58,21 @@ const userSchema = new mongoose.Schema({
   
   // Tenant ID - null for super_admin, pharmacy ID for others
   tenantId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Pharmacy',
-    default: null,    
-    validate: {
-      validator: function(v) {
-        if (this.role === 'super_admin') {
-          return v === null || v === undefined;
-        }
-        return v !== null && v !== undefined;
-      },
-      message: 'TenantId is required for pharmacy users and must be null for super admin'
-    }
-  },
-  
+  type: mongoose.Schema.Types.ObjectId,
+  ref: 'Pharmacy',
+  default: null,    
+  validate: {
+    validator: function(v) {
+      if (this.role === 'super_admin') {
+        return v === null || v === undefined;
+      }
+      // For pharmacy users, allow null at creation
+      return true;
+    },
+    message: 'Invalid tenantId for this role'
+  }
+},
+
   // Account Status
   status: {
     type: String,
@@ -265,8 +266,13 @@ userSchema.pre('save', async function(next) {
 
 // Pre-save middleware to set default permissions based on role
 userSchema.pre('save', function(next) {
+  // Clear permissions for non-attendants (owners and super_admins)
+  if (this.role !== 'attendant') {
+    this.permissions = undefined;
+  }
+  
+  // Only set permissions for NEW attendants
   if (this.role === 'attendant' && this.isNew) {
-    // Set default permissions for new attendants
     this.permissions = {
       sales: true,
       inventory: 'view',
@@ -276,9 +282,6 @@ userSchema.pre('save', function(next) {
       refunds: false,
       discounts: 'none'
     };
-  } else if (this.role !== 'attendant') {
-    // Clear permissions for non-attendants
-    this.permissions = undefined;
   }
   next();
 });

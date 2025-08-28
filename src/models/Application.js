@@ -1,139 +1,138 @@
 import mongoose from 'mongoose';
-import User from './User.js'; // Assuming User model is in same directory
 
 const applicationSchema = new mongoose.Schema({
-  // Pharmacy Information
   pharmacyName: {
     type: String,
     required: [true, 'Pharmacy name is required'],
     trim: true,
-    maxlength: [100, 'Pharmacy name cannot exceed 100 characters']
+    maxlength: [150, 'Pharmacy name cannot exceed 150 characters'],
+    minlength: [2, 'Pharmacy name must be at least 2 characters']
   },
-  
   pharmacyType: {
     type: String,
-    enum: ['retail', 'hospital', 'clinic', 'wholesale'], // Removed 'online' to match Pharmacy schema
-    required: [true, 'Pharmacy type is required']
+    enum: ['retail', 'hospital', 'clinic', 'wholesale', 'specialty', 'community'],
+    required: [true, 'Pharmacy type is required'],
+    default: 'retail'
   },
-  
-  // Location Information
   address: {
-    street: {
-      type: String,
-      required: [true, 'Street address is required'],
-      trim: true
+    street: { 
+      type: String, 
+      required: [true, 'Street address is required'], 
+      trim: true,
+      maxlength: [200, 'Street address too long']
     },
-    city: {
-      type: String,
-      required: [true, 'City is required'],
-      trim: true
+    city: { 
+      type: String, 
+      required: [true, 'City is required'], 
+      trim: true,
+      maxlength: [50, 'City name too long']
     },
-    county: {
-      type: String,
-      required: [true, 'County is required'],
-      trim: true
+    county: { 
+      type: String, 
+      required: [true, 'County is required'], 
+      trim: true,
+      maxlength: [50, 'County name too long']
     },
-    postalCode: {
-      type: String,
-      trim: true
+    postalCode: { 
+      type: String, 
+      trim: true,
+      maxlength: [20, 'Postal code too long']
     }
   },
-  
   coordinates: {
-    latitude: {
-      type: Number,
-      min: [-90, 'Latitude must be between -90 and 90'],
-      max: [90, 'Latitude must be between -90 and 90']
+    latitude: { 
+      type: Number, 
+      min: [-90, 'Invalid latitude'], 
+      max: [90, 'Invalid latitude']
     },
-    longitude: {
-      type: Number,
-      min: [-180, 'Longitude must be between -180 and 180'],
-      max: [180, 'Longitude must be between -180 and 180']
+    longitude: { 
+      type: Number, 
+      min: [-180, 'Invalid longitude'], 
+      max: [180, 'Invalid longitude']
     }
   },
-  
-  // Owner Information
   owner: {
-    firstName: {
-      type: String,
-      required: [true, 'Owner first name is required'],
-      trim: true,
-      maxlength: [50, 'First name cannot exceed 50 characters']
+    firstName: { 
+      type: String, 
+      required: [true, 'First name is required'], 
+      trim: true, 
+      maxlength: [100, 'First name too long'],
+      minlength: [1, 'First name required']
     },
-    lastName: {
-      type: String,
-      required: [true, 'Owner last name is required'],
-      trim: true,
-      maxlength: [50, 'Last name cannot exceed 50 characters']
+    lastName: { 
+      type: String, 
+      required: [true, 'Last name is required'], 
+      trim: true, 
+      maxlength: [100, 'Last name too long'],
+      minlength: [1, 'Last name required']
     },
     email: {
       type: String,
-      required: [true, 'Owner email is required'],
-      unique: true,
+      required: [true, 'Email is required'],
       lowercase: true,
       trim: true,
-      match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email']
+      match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'Please enter a valid email address'],
+      maxlength: [100, 'Email too long']
     },
     phone: {
       type: String,
-      required: [true, 'Owner phone number is required'],
+      required: [true, 'Phone number is required'],
       trim: true,
-      match: [/^(?:\+254|0)?[17]\d{8}$/, 'Please enter a valid Kenyan phone number']
+      validate: {
+        validator: function(phone) {
+          const cleaned = phone.replace(/\D/g, '');
+          return /^(254|0)?(7|1)\d{8}$/.test(cleaned) || /^\+254(7|1)\d{8}$/.test(phone);
+        },
+        message: 'Please enter a valid Kenyan phone number (e.g., 0712345678, +254712345678)'
+      }
     }
   },
-  
-  // Link to created user account
-  createdUserId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
+
+  operatingHours: {
+    monday: { type: String, default: '8:00 AM - 6:00 PM' },
+    tuesday: { type: String, default: '8:00 AM - 6:00 PM' },
+    wednesday: { type: String, default: '8:00 AM - 6:00 PM' },
+    thursday: { type: String, default: '8:00 AM - 6:00 PM' },
+    friday: { type: String, default: '8:00 AM - 6:00 PM' },
+    saturday: { type: String, default: '9:00 AM - 4:00 PM' },
+    sunday: { type: String, default: 'Closed' }
   },
   
-  // Application Status
-  status: {
-    type: String,
-    enum: ['pending', 'approved', 'rejected'],
-    default: 'pending'
+  additionalInfo: {
+    description: { type: String, maxlength: [500, 'Description too long'] },
+    website: { type: String, trim: true }
   },
   
-  // System Generated
+  // System fields
+  createdUserId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    default: null 
+  },
+  status: { 
+    type: String, 
+    enum: ['pending', 'approved', 'rejected', 'under_review'],
+    default: 'pending' 
+  },
   applicationId: {
     type: String,
     unique: true,
-    default: function() {
-      return 'APP-' + new Date().getFullYear() + '-' + 
-             String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+    default: function () {
+      const year = new Date().getFullYear();
+      const month = String(new Date().getMonth() + 1).padStart(2, '0');
+      const random = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
+      return `APP-${year}${month}-${random}`;
     }
   },
-  
-  submittedAt: {
-    type: Date,
-    default: Date.now
-  },
-  
-  // Admin who approved/rejected
-  reviewedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
-  },
-  
-  reviewedAt: {
-    type: Date,
-    default: null
-  },
-  
-  // Reference to created pharmacy (after approval)
-  createdPharmacyId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Pharmacy',
-    default: null
-  }
-  
+  submittedAt: { type: Date, default: Date.now },
+  reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  reviewedAt: { type: Date, default: null },
+  reviewNotes: { type: String, maxlength: [1000, 'Review notes too long'] },
+  rejectionReason: { type: String, maxlength: [500, 'Rejection reason too long'] }
 }, {
   timestamps: true,
   toJSON: {
-    transform: function(doc, ret) {
+    transform: function (doc, ret) {
       ret.fullOwnerName = `${ret.owner.firstName} ${ret.owner.lastName}`;
       ret.daysWaiting = Math.floor((new Date() - ret.submittedAt) / (1000 * 60 * 60 * 24));
       return ret;
@@ -141,157 +140,74 @@ const applicationSchema = new mongoose.Schema({
   }
 });
 
-// Indexes for performance
+// Indexes (removed licenseNumber index)
 applicationSchema.index({ status: 1, submittedAt: -1 });
 applicationSchema.index({ 'owner.email': 1 });
+applicationSchema.index({ applicationId: 1 }, { unique: true });
+applicationSchema.index({ pharmacyName: 1 });
+// Add these static methods to your Application model:
 
-// Virtual for full owner name
-applicationSchema.virtual('fullOwnerName').get(function() {
-  return `${this.owner.firstName} ${this.owner.lastName}`;
-});
-
-// Virtual for days waiting
-applicationSchema.virtual('daysWaiting').get(function() {
-  return Math.floor((new Date() - this.submittedAt) / (1000 * 60 * 60 * 24));
-});
-
-// Virtual for full address
-applicationSchema.virtual('fullAddress').get(function() {
-  const addr = this.address;
-  return `${addr.street}, ${addr.city}, ${addr.county}${addr.postalCode ? ', ' + addr.postalCode : ''}`;
-});
-
-// Static method to create application with user account
-applicationSchema.statics.createWithUser = async function(applicationData) {
-  const session = await mongoose.startSession();
+// Static method to get pending applications with pagination
+applicationSchema.statics.getPendingApplications = async function(page = 1, limit = 10) {
+  const skip = (page - 1) * limit;
   
-  try {
-    await session.withTransaction(async () => {
-      // Create user account first
-      const userData = {
-        firstName: applicationData.owner.firstName,
-        lastName: applicationData.owner.lastName,
-        email: applicationData.owner.email,
-        phone: applicationData.owner.phone,
-        role: 'pharmacy_owner',
-        status: 'pending', // Not active until application is approved
-        isEmailVerified: false,
-        password: 'temp_password_' + Math.random().toString(36).slice(-8) // Temporary password
-      };
-      
-      const user = await User.create([userData], { session });
-      
-      // Create application
-      const application = new this({
-        ...applicationData,
-        createdUserId: user[0]._id
-      });
-      
-      const savedApplication = await application.save({ session });
-      
-      return { user: user[0], application: savedApplication };
-    });
-    
-  } catch (error) {
-    throw error;
-  } finally {
-    await session.endSession();
-  }
-};
-
-// Static method to get pending applications
-applicationSchema.statics.getPendingApplications = function(page = 1, limit = 10) {
   return this.find({ status: 'pending' })
-    .sort({ submittedAt: 1 })
+    .sort({ submittedAt: -1 })
+    .skip(skip)
     .limit(limit)
-    .skip((page - 1) * limit)
-    .populate('createdUserId', 'firstName lastName email phone status');
+    .select('applicationId pharmacyName owner.firstName owner.lastName owner.email owner.phone submittedAt address.city address.county')
+    .lean();
 };
 
 // Static method to search applications
-applicationSchema.statics.searchApplications = function(query, filters = {}) {
-  let searchQuery = {};
-  
-  if (query) {
-    searchQuery.$or = [
+applicationSchema.statics.searchApplications = async function(query, filters = {}) {
+  const searchQuery = {
+    ...filters,
+    $or: [
       { pharmacyName: { $regex: query, $options: 'i' } },
       { 'owner.firstName': { $regex: query, $options: 'i' } },
       { 'owner.lastName': { $regex: query, $options: 'i' } },
       { 'owner.email': { $regex: query, $options: 'i' } },
-      { applicationId: { $regex: query, $options: 'i' } }
-    ];
-  }
-  
-  // Apply filters
-  if (filters.status) searchQuery.status = filters.status;
-  if (filters.pharmacyType) searchQuery.pharmacyType = filters.pharmacyType;
-  if (filters.county) searchQuery['address.county'] = filters.county;
-  
+      { applicationId: { $regex: query, $options: 'i' } },
+      { 'address.city': { $regex: query, $options: 'i' } },
+      { 'address.county': { $regex: query, $options: 'i' } }
+    ]
+  };
+
   return this.find(searchQuery)
     .sort({ submittedAt: -1 })
-    .populate('createdUserId', 'firstName lastName email phone status')
-    .populate('reviewedBy', 'firstName lastName email');
-};
-
-// Instance method to approve application and activate user
-applicationSchema.methods.approve = async function(adminId, pharmacyData = {}) {
-  const session = await mongoose.startSession();
-  
-  try {
-    return await session.withTransaction(async () => {
-      // Update application status
-      this.status = 'approved';
-      this.reviewedBy = adminId;
-      this.reviewedAt = new Date();
-      
-      // Activate the user account
-      if (this.createdUserId) {
-        await User.findByIdAndUpdate(
-          this.createdUserId,
-          { 
-            status: 'active',
-            lastModifiedBy: adminId
-          },
-          { session }
-        );
-      }
-      
-      const savedApplication = await this.save({ session });
-      
-      // Optionally create pharmacy here or return application for manual pharmacy creation
-      return savedApplication;
-    });
-  } catch (error) {
-    throw error;
-  } finally {
-    await session.endSession();
-  }
+    .select('applicationId pharmacyName pharmacyType owner status submittedAt address')
+    .lean();
 };
 
 // Instance method to reject application
-applicationSchema.methods.reject = async function(adminId, reason = '') {
+applicationSchema.methods.reject = async function(adminId) {
   this.status = 'rejected';
   this.reviewedBy = adminId;
   this.reviewedAt = new Date();
   
-  // Optionally deactivate user account
+  // Deactivate the associated user
   if (this.createdUserId) {
-    await User.findByIdAndUpdate(
-      this.createdUserId,
-      { 
-        status: 'inactive',
-        lastModifiedBy: adminId
-      }
-    );
+    await User.findByIdAndUpdate(this.createdUserId, {
+      status: 'inactive',
+      lastModifiedBy: adminId
+    });
   }
   
   return this.save();
-};
+}; 
+// Virtuals
+applicationSchema.virtual('fullOwnerName').get(function () {
+  return `${this.owner.firstName} ${this.owner.lastName}`;
+});
 
-// Method to link created pharmacy
-applicationSchema.methods.linkPharmacy = function(pharmacyId) {
-  this.createdPharmacyId = pharmacyId;
-  return this.save();
-};
+applicationSchema.virtual('daysWaiting').get(function () {
+  return Math.floor((new Date() - this.submittedAt) / (1000 * 60 * 60 * 24));
+});
+
+applicationSchema.virtual('fullAddress').get(function () {
+  const a = this.address;
+  return `${a.street}, ${a.city}, ${a.county}${a.postalCode ? ', ' + a.postalCode : ''}`;
+});
 
 export default mongoose.model('Application', applicationSchema);
