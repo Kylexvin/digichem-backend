@@ -9,11 +9,15 @@ import {
   deleteProduct
 } from '../controllers/inventory/productController.js';
 
-// Import the new stock controllers
+// Import the stock controllers including NEW reconciliation functions
 import {
   getLowStockProducts,
   adjustStock,
-  getStockHistory
+  getStockHistory,
+  getPendingReconciliations,    // ← ADD
+  updateReconciliation,         // ← ADD  
+  getReconciliationStats,       // ← ADD
+  adjustStockFromReconciliation // ← ADD
 } from '../controllers/inventory/stockController.js';
 
 const router = express.Router();
@@ -32,5 +36,26 @@ router.delete('/products/:id', authorize(['pharmacy_owner']), deleteProduct);
 router.get('/low-stock', authorize(['pharmacy_owner']), getLowStockProducts);
 router.post('/stock-adjustment', authorize(['pharmacy_owner']), adjustStock);
 router.get('/stock-history', authorize(['pharmacy_owner']), getStockHistory);
+
+// NEW: Stock Reconciliation Routes - Pharmacy owners only
+router.get('/reconciliations/pending', 
+  authorize(['pharmacy_owner']),
+  getPendingReconciliations
+);
+
+router.get('/reconciliations/stats', 
+  authorize(['pharmacy_owner']),
+  getReconciliationStats
+);
+
+router.put('/reconciliations/:id', 
+  authorize(['pharmacy_owner']),
+  updateReconciliation
+);
+
+router.post('/reconciliations/:id/adjust', 
+  authorize(['pharmacy_owner']),
+  adjustStockFromReconciliation
+);
 
 export default router;

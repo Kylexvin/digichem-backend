@@ -6,9 +6,14 @@ import authRoutes from './routes/auth.js';
 import applicationRoutes from './routes/public.js';
 import superAdmin from './routes/superAdmin.js';
 import pharmacyRoutes from './routes/pharmacy.js';
-import inventoryRoutes from './routes/inventory.js'; // Add this import
+import inventoryRoutes from './routes/inventory.js';
+import staffRoutes from './routes/staff.js'; 
+import posRoutes from './routes/pos.js';
+
+
 
 const app = express();
+
 
 app.use(cors());
 app.use(express.json());
@@ -17,9 +22,10 @@ app.use(express.json());
 app.use('/api', routes);
 app.use('/api/auth', authRoutes);
 app.use('/api/pharmacy', pharmacyRoutes);
-app.use('/api/inventory', inventoryRoutes); // Add this line
+app.use('/api/inventory', inventoryRoutes);
+app.use('/api', staffRoutes); 
 
-// Add public applications routes under a different path:
+app.use('/api/pos', posRoutes);
 app.use('/api/public/applications', applicationRoutes);
 app.use('/api/applications/superadmin', superAdmin);
 

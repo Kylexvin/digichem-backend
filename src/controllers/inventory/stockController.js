@@ -1,7 +1,181 @@
 // src/controllers/inventory/stockController.js
 import Product from '../../models/Product.js';
 import InventoryLog from '../../models/InventoryLog.js';
+import StockReconciliation from '../../models/StockReconciliation.js'; 
 
+
+
+// GET /api/inventory/reconciliations/pending - Get pending stock reconciliations
+export const getPendingReconciliations = async (req, res) => {
+  try {
+    const reconciliations = await StockReconciliation.find({
+      pharmacy: req.user.tenantId,
+      status: 'pending'
+    })
+    .populate('saleId', 'receiptNumber createdAt')
+    .populate('attendant', 'firstName lastName')
+    .populate('product', 'name sku')
+    .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      data: reconciliations
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending reconciliations',
+      error: error.message
+    });
+  }
+};
+
+// PUT /api/inventory/reconciliations/:id - Update reconciliation status
+export const updateReconciliation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, resolutionNotes, action } = req.body;
+
+    const reconciliation = await StockReconciliation.findOneAndUpdate(
+      {
+        _id: id,
+        pharmacy: req.user.tenantId
+      },
+      {
+        status,
+        resolutionNotes,
+        action,
+        resolvedBy: req.user.id,
+        resolvedAt: status === 'resolved' || status === 'adjusted' ? new Date() : undefined
+      },
+      { new: true }
+    )
+    .populate('saleId', 'receiptNumber')
+    .populate('product', 'name')
+    .populate('resolvedBy', 'firstName lastName');
+
+    if (!reconciliation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Reconciliation record not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Reconciliation updated successfully',
+      data: reconciliation
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update reconciliation',
+      error: error.message
+    });
+  }
+};
+
+// GET /api/inventory/reconciliations/stats - Get reconciliation statistics
+export const getReconciliationStats = async (req, res) => {
+  try {
+    const stats = await StockReconciliation.aggregate([
+      {
+        $match: {
+          pharmacy: req.user.tenantId
+        }
+      },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          totalDeficit: { $sum: '$deficit' }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      data: stats
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch reconciliation statistics',
+      error: error.message
+    });
+  }
+};
+
+// POST /api/inventory/reconciliations/:id/adjust - Adjust stock from reconciliation
+export const adjustStockFromReconciliation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { adjustmentQuantity, notes } = req.body;
+
+    const reconciliation = await StockReconciliation.findOne({
+      _id: id,
+      pharmacy: req.user.tenantId,
+      status: 'pending'
+    }).populate('product');
+
+    if (!reconciliation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Pending reconciliation record not found'
+      });
+    }
+
+    // Adjust the stock
+    const product = await Product.findById(reconciliation.product._id);
+    await product.addStock(0, adjustmentQuantity); // Add individual units
+
+    await product.save();
+
+    // Update reconciliation status
+    reconciliation.status = 'adjusted';
+    reconciliation.resolvedBy = req.user.id;
+    reconciliation.resolvedAt = new Date();
+    reconciliation.resolutionNotes = notes || `Stock adjusted by ${adjustmentQuantity} units`;
+    reconciliation.action = 'stock_adjusted';
+    
+    await reconciliation.save();
+
+    // Log the stock adjustment
+    await InventoryLog.create({
+      product: reconciliation.product._id,
+      pharmacy: req.user.tenantId,
+      action: 'stock_adjust',
+      performedBy: req.user.id,
+      details: {
+        adjustmentType: 'add_units',
+        quantity: adjustmentQuantity,
+        reason: 'reconciliation',
+        notes: `Stock reconciliation for sale ${reconciliation.saleId}: ${notes}`,
+        reconciliationId: reconciliation._id
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Stock adjusted and reconciliation completed',
+      data: {
+        reconciliation,
+        product: {
+          id: product._id,
+          name: product.name,
+          newStock: product.stock
+        }
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to adjust stock from reconciliation',
+      error: error.message
+    });
+  }
+};
 // GET /api/inventory/low-stock - Get low stock alerts
 export const getLowStockProducts = async (req, res) => {
   try {

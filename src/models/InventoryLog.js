@@ -1,4 +1,4 @@
-// src/models/InventoryLog.js - Should have default export
+// src/models/InventoryLog.js - UPDATED
 import mongoose from 'mongoose';
 
 const inventoryLogSchema = new mongoose.Schema({
@@ -14,7 +14,7 @@ const inventoryLogSchema = new mongoose.Schema({
   },
   action: {
     type: String,
-    enum: ['create', 'update', 'delete', 'stock_adjust', 'stock_add', 'stock_remove'],
+    enum: ['create', 'update', 'delete', 'stock_adjust', 'stock_add', 'stock_remove', 'sale'], // ADDED 'sale'
     required: true
   },
   performedBy: {
@@ -23,7 +23,7 @@ const inventoryLogSchema = new mongoose.Schema({
     required: true
   },
   details: {
-    type: mongoose.Schema.Types.Mixed, // Can store any data structure
+    type: mongoose.Schema.Types.Mixed,
     default: {}
   },
   previousState: {
@@ -45,5 +45,4 @@ inventoryLogSchema.index({ performedBy: 1 });
 
 const InventoryLog = mongoose.model('InventoryLog', inventoryLogSchema);
 
-// Make sure this line exists for default export:
 export default InventoryLog;

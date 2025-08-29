@@ -114,12 +114,17 @@ const userSchema = new mongoose.Schema({
       type: Boolean,
       default: false
     },
-    discounts: {
-      type: String,
-      enum: ['none', 'limited', 'full'],
-      default: 'none'
-    }
+     discounts: {
+    type: String,
+    enum: ['none', 'limited', 'full'],
+    default: 'none'
   },
+  
+  overrideStock: {
+    type: Boolean,
+    default: false
+  }
+},
   
   // Profile & Preferences
   profilePicture: {
@@ -280,7 +285,8 @@ userSchema.pre('save', function(next) {
       customers: 'view',
       settings: false,
       refunds: false,
-      discounts: 'none'
+      discounts: 'none',
+      overrideStock: false 
     };
   }
   next();
@@ -399,6 +405,7 @@ userSchema.statics.createPharmacyOwner = async function(userData, pharmacyId) {
 };
 
 // Static method to create attendant
+// In models/User.js - Fix the createAttendant static method
 userSchema.statics.createAttendant = async function(userData, pharmacyId, permissions = {}) {
   const attendant = new this({
     ...userData,
@@ -411,13 +418,16 @@ userSchema.statics.createAttendant = async function(userData, pharmacyId, permis
       customers: permissions.customers || 'view',
       settings: permissions.settings || false,
       refunds: permissions.refunds || false,
-      discounts: permissions.discounts || 'none'
+      discounts: permissions.discounts || 'none', 
+      overrideStock: permissions.overrideStock || false 
     },
     status: 'active'
   });
   
   return attendant.save();
 };
+  
+
 
 // Method to check if user has specific permission
 userSchema.methods.hasPermission = function(permission, level = null) {
