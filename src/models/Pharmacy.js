@@ -155,17 +155,22 @@ const pharmacySchema = new mongoose.Schema({
   
   // Basic Branding
   branding: {
-    logo: String,
-    primaryColor: {
-      type: String,
-      default: '#007bff'
-    },
-    theme: {
-      type: String,
-      enum: ['light', 'dark'],
-      default: 'light'
-    }
+  logo: String,
+  favicon: String,
+  primaryColor: {
+    type: String,
+    default: '#ff8800ff'
   },
+  secondaryColor: {
+    type: String,
+    default: '#ec0606ff'
+  },
+  theme: {
+    type: String,
+    enum: ['light', 'dark'],
+    default: 'light'
+  }
+},
   
   // Status
   status: {

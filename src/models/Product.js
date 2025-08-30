@@ -1,4 +1,4 @@
-// src/models/Product.js - PRODUCTION READY
+// src/models/Product.js - FIXED VERSION
 import mongoose from 'mongoose';
 
 const productSchema = new mongoose.Schema({
@@ -30,33 +30,33 @@ const productSchema = new mongoose.Schema({
     default: 'OTC'
   },
   
-  // Pricing Structure - Only store raw data, calculations are virtual
-// In src/models/Product.js - FIX THE VALIDATION
-pricing: {
-  costPerPack: {
-    type: Number,
-    required: [true, 'Cost per pack is required'],
-    min: [0, 'Cost cannot be negative']
-  },
-  sellingPricePerPack: {
-    type: Number,
-    required: [true, 'Selling price per pack is required'],
-    min: [0, 'Selling price cannot be negative'],
-    validate: {
-      validator: function(value) {
-        // FIX: Use this.pricing.costPerPack instead of this.costPerPack
-        return value >= this.pricing.costPerPack;
-      },
-      message: 'Selling price must be greater than or equal to cost price'
+  // Pricing Structure - FIXED: Proper schema structure
+  pricing: {
+    costPerPack: {
+      type: Number,
+      required: [true, 'Cost per pack is required'],
+      min: [0, 'Cost cannot be negative'],
+      default: 0
+    },
+    sellingPricePerPack: {
+      type: Number,
+      required: [true, 'Selling price per pack is required'],
+      min: [0, 'Selling price cannot be negative'],
+      default: 0,
+      validate: {
+        validator: function(value) {
+          return value >= this.costPerPack;
+        },
+        message: 'Selling price must be greater than or equal to cost price'
+      }
+    },
+    unitsPerPack: {
+      type: Number,
+      required: [true, 'Units per pack is required'],
+      min: [1, 'Must have at least 1 unit per pack'],
+      default: 1  // Changed from 10 to 1 as more reasonable default
     }
   },
-  unitsPerPack: {
-    type: Number,
-    required: [true, 'Units per pack is required'],
-    min: [1, 'Must have at least 1 unit per pack'],
-    default: 10
-  }
-},
   
   // Stock Management
   stock: {
@@ -182,46 +182,72 @@ pricing: {
 // All calculations are done as virtuals, not stored in database
 
 productSchema.virtual('pricing.pricePerUnit').get(function() {
-  if (!this.pricing.sellingPricePerPack || !this.pricing.unitsPerPack || this.pricing.unitsPerPack === 0) {
+  if (!this.pricing?.sellingPricePerPack || !this.pricing?.unitsPerPack || this.pricing.unitsPerPack === 0) {
     return 0;
   }
   return this.pricing.sellingPricePerPack / this.pricing.unitsPerPack;
 });
 
+// FIXED: Added proper null checks and safety
 productSchema.virtual('stock.totalUnits').get(function() {
-  return (this.stock.fullPacks * this.pricing.unitsPerPack) + this.stock.looseUnits;
+  const fullPacks = this.stock?.fullPacks || 0;
+  const looseUnits = this.stock?.looseUnits || 0;
+  const unitsPerPack = this.pricing?.unitsPerPack || 1;
+  
+  return (fullPacks * unitsPerPack) + looseUnits;
 });
 
+// FIXED: Stock value calculation with safety checks
 productSchema.virtual('stockValue').get(function() {
-  const packValue = this.stock.fullPacks * this.pricing.costPerPack;
-  const unitValue = this.stock.looseUnits * (this.pricing.costPerPack / this.pricing.unitsPerPack);
+  const fullPacks = this.stock?.fullPacks || 0;
+  const looseUnits = this.stock?.looseUnits || 0;
+  const costPerPack = this.pricing?.costPerPack || 0;
+  const unitsPerPack = this.pricing?.unitsPerPack || 1;
+  
+  if (unitsPerPack === 0) return 0; // Prevent division by zero
+  
+  const packValue = fullPacks * costPerPack;
+  const unitValue = looseUnits * (costPerPack / unitsPerPack);
+  
   return packValue + unitValue;
 });
 
+// FIXED: Profit margin calculation with safety checks
 productSchema.virtual('profitMargin').get(function() {
-  if (!this.pricing.sellingPricePerPack || !this.pricing.costPerPack || this.pricing.costPerPack === 0) {
-    return 0;
-  }
-  return ((this.pricing.sellingPricePerPack - this.pricing.costPerPack) / this.pricing.costPerPack) * 100;
+  const sellingPrice = this.pricing?.sellingPricePerPack || 0;
+  const costPrice = this.pricing?.costPerPack || 0;
+  
+  if (costPrice === 0) return 0;
+  
+  return ((sellingPrice - costPrice) / costPrice) * 100;
 });
 
+// FIXED: Stock status with proper checks
 productSchema.virtual('stockStatus').get(function() {
   const total = this.stock.totalUnits;
+  const minStock = this.stock?.minStockLevel || 0;
+  
   if (total === 0) return 'out_of_stock';
-  if (total <= this.stock.minStockLevel) return 'low_stock';
+  if (total <= minStock) return 'low_stock';
   return 'in_stock';
 });
 
 productSchema.virtual('isLowStock').get(function() {
-  return this.stock.totalUnits <= this.stock.minStockLevel;
+  const total = this.stock.totalUnits;
+  const minStock = this.stock?.minStockLevel || 0;
+  return total <= minStock;
 });
 
 productSchema.virtual('needsRestock').get(function() {
-  return this.stock.totalUnits <= this.stock.minStockLevel;
+  const total = this.stock.totalUnits;
+  const minStock = this.stock?.minStockLevel || 0;
+  return total <= minStock;
 });
 
 productSchema.virtual('restockQuantity').get(function() {
-  return Math.max(0, this.stock.maxStockLevel - this.stock.totalUnits);
+  const total = this.stock.totalUnits;
+  const maxStock = this.stock?.maxStockLevel || 0;
+  return Math.max(0, maxStock - total);
 });
 
 // ==================== INDEXES ====================
@@ -243,7 +269,7 @@ productSchema.pre('save', function(next) {
   }
   
   // Ensure selling price >= cost price
-  if (this.pricing.sellingPricePerPack < this.pricing.costPerPack) {
+  if (this.pricing?.sellingPricePerPack < this.pricing?.costPerPack) {
     this.pricing.sellingPricePerPack = this.pricing.costPerPack;
   }
   
@@ -252,29 +278,36 @@ productSchema.pre('save', function(next) {
 
 // ==================== METHODS ====================
 productSchema.methods.addStock = function(packs, units = 0) {
-  this.stock.fullPacks += packs;
-  this.stock.looseUnits += units;
+  this.stock.fullPacks = (this.stock.fullPacks || 0) + packs;
+  this.stock.looseUnits = (this.stock.looseUnits || 0) + units;
   
   // Convert excess loose units to packs
-  const additionalPacks = Math.floor(this.stock.looseUnits / this.pricing.unitsPerPack);
+  const unitsPerPack = this.pricing?.unitsPerPack || 1;
+  const additionalPacks = Math.floor(this.stock.looseUnits / unitsPerPack);
   this.stock.fullPacks += additionalPacks;
-  this.stock.looseUnits = this.stock.looseUnits % this.pricing.unitsPerPack;
+  this.stock.looseUnits = this.stock.looseUnits % unitsPerPack;
   
   return this.save();
 };
 
 productSchema.methods.sellStock = function(packs, units) {
-  const totalUnitsToSell = (packs * this.pricing.unitsPerPack) + units;
+  const unitsPerPack = this.pricing?.unitsPerPack || 1;
+  const totalUnitsToSell = (packs * unitsPerPack) + units;
+  const availableUnits = this.stock.totalUnits;
   
-  if (totalUnitsToSell > this.stock.totalUnits) {
-    throw new Error(`Insufficient stock. Available: ${this.stock.totalUnits}, Requested: ${totalUnitsToSell}`);
+  if (totalUnitsToSell > availableUnits) {
+    throw new Error(`Insufficient stock. Available: ${availableUnits}, Requested: ${totalUnitsToSell}`);
   }
   
-  // Implementation for stock reduction would go here
-  // (This would be more complex in real scenario)
+  this.stock.fullPacks = (this.stock.fullPacks || 0) - packs;
+  this.stock.looseUnits = Math.max(0, (this.stock.looseUnits || 0) - units);
   
-  this.stock.fullPacks -= packs;
-  this.stock.looseUnits = Math.max(0, this.stock.looseUnits - units);
+  // Handle negative loose units by converting from packs
+  if (this.stock.looseUnits < 0) {
+    const unitsToConvert = Math.ceil(Math.abs(this.stock.looseUnits) / unitsPerPack);
+    this.stock.fullPacks -= unitsToConvert;
+    this.stock.looseUnits += unitsToConvert * unitsPerPack;
+  }
   
   return this.save();
 };
@@ -285,11 +318,17 @@ productSchema.statics.findByPharmacy = function(pharmacyId, filters = {}) {
   return this.find(query);
 };
 
-productSchema.statics.getLowStockProducts = function(pharmacyId) {
-  return this.find({
+// FIXED: This won't work with virtual fields in queries, need alternative approach
+productSchema.statics.getLowStockProducts = async function(pharmacyId) {
+  const products = await this.find({
     pharmacy: pharmacyId,
-    status: 'active',
-    $expr: { $lte: ['$stock.totalUnits', '$stock.minStockLevel'] }
+    status: 'active'
+  });
+  
+  return products.filter(product => {
+    const totalUnits = product.stock.totalUnits;
+    const minStock = product.stock?.minStockLevel || 0;
+    return totalUnits <= minStock && totalUnits > 0;
   });
 };
 
