@@ -9,15 +9,15 @@ import {
   deleteProduct
 } from '../controllers/inventory/productController.js';
 
-// Import the stock controllers including NEW reconciliation functions
+import { getInventoryOverview } from '../controllers/inventory/overviewController.js';
 import {
   getLowStockProducts,
   adjustStock,
   getStockHistory,
-  getPendingReconciliations,    // ← ADD
-  updateReconciliation,         // ← ADD  
-  getReconciliationStats,       // ← ADD
-  adjustStockFromReconciliation // ← ADD
+  getPendingReconciliations,    
+  updateReconciliation,           
+  getReconciliationStats,       
+  adjustStockFromReconciliation 
 } from '../controllers/inventory/stockController.js';
 
 const router = express.Router();
@@ -56,6 +56,11 @@ router.put('/reconciliations/:id',
 router.post('/reconciliations/:id/adjust', 
   authorize(['pharmacy_owner']),
   adjustStockFromReconciliation
+);
+// Overview route
+router.get('/overview',
+  authorize(['pharmacy_owner', 'attendant']),
+  getInventoryOverview
 );
 
 export default router;

@@ -6,7 +6,7 @@ import { validationResult } from 'express-validator';
 import mongoose from 'mongoose';
 
 
-/**
+/** 
  * Helper function to generate subdomain from pharmacy name
  */
 const generateSubdomain = (pharmacyName) => {

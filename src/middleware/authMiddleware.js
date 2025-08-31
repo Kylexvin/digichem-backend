@@ -321,64 +321,42 @@ export const authRateLimit = (maxAttempts = 5, windowMs = 15 * 60 * 1000) => {
   };
 };
 
-/**
- * Validate refresh token middleware
- */
 export const validateRefreshToken = async (req, res, next) => {
   try {
-    const { refreshToken } = req.body;
-    
-    if (!refreshToken) {
+    const authHeader = req.header('Authorization');
+    const token = extractBearerToken(authHeader);
+
+    if (!token) {
       return res.status(401).json({
         success: false,
-        message: 'Refresh token required.'
+        message: 'No refresh token provided'
       });
     }
-    
-    const decoded = verifyToken(refreshToken, 'refresh');
-    
-    if (decoded.type !== 'refresh') {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token type.'
-      });
-    }
-    
+
+    const decoded = verifyToken(token, 'refresh');
+
     const user = await User.findById(decoded.userId);
-    
     if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'User not found.'
-      });
+      return res.status(401).json({ success: false, message: 'User not found' });
     }
-    
-    // Check if refresh token exists in user's refresh tokens
-    const tokenExists = user.refreshTokens.some(tokenObj => tokenObj.token === refreshToken);
-    
-    if (!tokenExists) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid or expired refresh token.'
-      });
+
+    // Ensure this refresh token is still valid (stored in user.refreshTokens)
+    const validToken = user.refreshTokens.find(t => t.token === token);
+    if (!validToken) {
+      return res.status(401).json({ success: false, message: 'Refresh token invalid or revoked' });
     }
-    
+
     req.user = user;
-    req.refreshToken = refreshToken;
-    
+    req.refreshToken = token;
     next();
-    
-  } catch (error) {
-    console.error('Refresh token validation error:', error.message);
-    
+  } catch (err) {
     return res.status(401).json({
       success: false,
-      message: 'Invalid refresh token.',
-      code: 'INVALID_REFRESH_TOKEN'
+      message: 'Invalid refresh token',
+      error: err.message
     });
   }
 };
-
 export default {
   authenticate,
   authorize,

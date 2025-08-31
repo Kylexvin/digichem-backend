@@ -22,7 +22,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// Routes
+// Routes 
 app.use('/api', routes);
 app.use('/api/auth', authRoutes);
 app.use('/api/pharmacy', pharmacyRoutes);

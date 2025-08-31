@@ -80,6 +80,7 @@ router.post('/refresh',
   refreshToken
 );
 
+
 /**
  * @route   POST /api/auth/logout
  * @desc    Logout user (invalidate refresh token)

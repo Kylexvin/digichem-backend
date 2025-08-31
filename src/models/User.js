@@ -301,6 +301,23 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
   }
 };
 
+// Instance method to generate refresh token
+userSchema.methods.generateRefreshToken = function(deviceInfo = {}) {
+  const refreshToken = jwt.sign(
+    { id: this._id, role: this.role },
+    process.env.JWT_REFRESH_SECRET,
+    { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "7d" }
+  );
+
+  // Store it in user's refreshTokens array
+  this.refreshTokens.push({
+    token: refreshToken,
+    deviceInfo,
+    createdAt: new Date()
+  });
+
+  return refreshToken;
+};
 
 
 // Instance method to remove refresh token

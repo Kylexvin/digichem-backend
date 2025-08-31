@@ -220,26 +220,32 @@ export const login = async (req, res) => {
  */
 export const refreshToken = async (req, res) => {
   try {
-    const user = req.user; // Set by validateRefreshToken middleware
+    const user = req.user; // set by validateRefreshToken middleware
     const oldRefreshToken = req.refreshToken;
 
-    // Remove old refresh token
+    // Remove the old refresh token
     user.removeRefreshToken(oldRefreshToken);
 
-    // Generate new tokens
+    // Create new device info
     const deviceInfo = {
       userAgent: req.get('User-Agent'),
       ip: req.ip,
       location: req.get('CF-IPCountry') || 'Unknown'
     };
 
+    // Generate new refresh token
     const newRefreshToken = user.generateRefreshToken(deviceInfo);
+
+    // Save user with updated refresh token list
     await user.save();
 
+    // Build token response with fresh access token
     const tokenResponse = createTokenResponse(user, deviceInfo);
+
+    // Overwrite refreshToken in response (so frontend gets the correct one)
     tokenResponse.tokens.refreshToken = newRefreshToken;
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Token refreshed successfully',
       ...tokenResponse
@@ -247,13 +253,14 @@ export const refreshToken = async (req, res) => {
 
   } catch (error) {
     console.error('Token refresh error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Token refresh failed',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 };
+
 
 /**
  * Logout (invalidate refresh token)
