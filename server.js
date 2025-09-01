@@ -5,7 +5,7 @@ import cloudinary from './src/config/cloudinary.js'; // Import Cloudinary
 
 // Load environment variables
 dotenv.config();
-
+  
 const PORT = process.env.PORT || 5000;
 
 // Cloudinary config check

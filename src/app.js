@@ -18,10 +18,10 @@ app.use(cors({
   credentials: true, // Allow cookies/auth headers
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
-})); 
+}));   
 
 app.use(express.json());
-
+ 
 // Routes 
 app.use('/api', routes);
 app.use('/api/auth', authRoutes);

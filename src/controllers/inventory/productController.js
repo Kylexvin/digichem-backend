@@ -5,6 +5,7 @@ import InventoryLog from '../../models/InventoryLog.js';
 // 1. POST /api/inventory/products - Add new product
 export const createProduct = async (req, res) => {
   try {
+    // Ensure pharmacy is always set to the user's tenant
     const productData = {
       ...req.body,
       pharmacy: req.user.tenantId,
@@ -20,7 +21,7 @@ export const createProduct = async (req, res) => {
       pharmacy: req.user.tenantId,
       action: 'create',
       performedBy: req.user.id,
-      details: { ...req.body }
+      details: req.body
     });
 
     res.status(201).json({
@@ -28,7 +29,6 @@ export const createProduct = async (req, res) => {
       message: 'Product created successfully',
       data: product
     });
-
   } catch (error) {
     if (error.name === 'ValidationError') {
       return res.status(400).json({
@@ -37,7 +37,7 @@ export const createProduct = async (req, res) => {
         error: error.message
       });
     }
-    
+
     res.status(500).json({
       success: false,
       message: 'Failed to create product',
@@ -53,6 +53,7 @@ export const getProducts = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const filter = { pharmacy: req.user.tenantId };
+
     if (category) filter.category = category;
     if (status) filter.status = status;
     if (search) {
@@ -80,7 +81,6 @@ export const getProducts = async (req, res) => {
         pages: Math.ceil(total / limit)
       }
     });
-
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -89,6 +89,59 @@ export const getProducts = async (req, res) => {
     });
   }
 };
+
+// 4. PUT /api/inventory/products/:id - Update product
+export const updateProduct = async (req, res) => {
+  try {
+    const product = await Product.findOne({ _id: req.params.id, pharmacy: req.user.tenantId });
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    // If stock update requested
+    if (req.body.stock) {
+      const { fullPacks = 0, looseUnits = 0 } = req.body.stock;
+      await product.addStock(fullPacks, looseUnits);
+    }
+
+    // Update other fields (name, description, etc.)
+    const updatableFields = ['name', 'description', 'category', 'pricing', 'status'];
+    updatableFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        product[field] = req.body[field];
+      }
+    });
+
+    product.lastModifiedBy = req.user.id;
+    await product.save();
+
+    // Log inventory activity
+    await InventoryLog.create({
+      product: product._id,
+      pharmacy: req.user.tenantId,
+      action: 'update',
+      performedBy: req.user.id,
+      details: req.body
+    });
+
+    res.json({
+      success: true,
+      message: 'Product updated successfully',
+      data: product
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update product',
+      error: error.message
+    });
+  }
+};
+
+
 
 // 3. GET /api/inventory/products/:id - Get single product
 export const getProduct = async (req, res) => {
@@ -119,44 +172,7 @@ export const getProduct = async (req, res) => {
   }
 };
 
-// 4. PUT /api/inventory/products/:id - Update product
-export const updateProduct = async (req, res) => {
-  try {
-    const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, pharmacy: req.user.tenantId },
-      { ...req.body, lastModifiedBy: req.user.id },
-      { new: true, runValidators: true }
-    );
 
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message: 'Product not found'
-      });
-    }
-
-    await InventoryLog.create({
-      product: product._id,
-      pharmacy: req.user.tenantId,
-      action: 'update',
-      performedBy: req.user.id,
-      details: req.body
-    });
-
-    res.json({
-      success: true,
-      message: 'Product updated successfully',
-      data: product
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update product',
-      error: error.message
-    });
-  }
-};
 
 // 5. DELETE /api/inventory/products/:id - Soft delete
 export const deleteProduct = async (req, res) => {
