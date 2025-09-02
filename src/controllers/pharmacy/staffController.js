@@ -1,6 +1,9 @@
 // src/controllers/pharmacy/staffController.js
 import User from '../../models/User.js';
 import Pharmacy from '../../models/Pharmacy.js';
+import Sale from '../../models/Sale.js';
+import mongoose from 'mongoose';
+import StaffActivity from '../../models/StaffActivity.js';
 import { sendWelcomeEmail } from '../../services/notificationService.js';
 
 export const createStaff = async (req, res) => {
@@ -128,8 +131,9 @@ export const updateStaffPermissions = async (req, res) => {
   }
 };
 
+
 /**
- * Get quick staff overview for dashboard
+ * Get quick staff overview for dashboard with recent activities
  * @route GET /api/pharmacy/staff/overview
  * @access Private (Pharmacy owner only)
  */
@@ -137,11 +141,10 @@ export const getStaffOverview = async (req, res) => {
   try {
     const pharmacyId = req.user.tenantId;
     const { timeRange = 'week' } = req.query;
-    
-    // Calculate date range for performance metrics
+
+    // Calculate start date based on timeRange
     const now = new Date();
     const startDate = new Date();
-    
     switch (timeRange) {
       case 'today':
         startDate.setHours(0, 0, 0, 0);
@@ -163,7 +166,7 @@ export const getStaffOverview = async (req, res) => {
       status: 'active'
     }).select('firstName lastName email phone permissions lastLogin createdAt');
 
-    // Get sales data for performance metrics
+    // Get sales performance metrics
     const salesData = await Sale.aggregate([
       {
         $match: {
@@ -189,9 +192,7 @@ export const getStaffOverview = async (req, res) => {
           as: 'attendantInfo'
         }
       },
-      {
-        $unwind: '$attendantInfo'
-      },
+      { $unwind: '$attendantInfo' },
       {
         $project: {
           attendantId: '$_id',
@@ -205,11 +206,31 @@ export const getStaffOverview = async (req, res) => {
       }
     ]);
 
-    // Get pharmacy info for limits
+    // Get recent staff activities
+    const activityLogs = await StaffActivity.find({
+      tenantId: pharmacyId,
+      createdAt: { $gte: startDate, $lte: now }
+    })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .populate('staff', 'firstName lastName');
+
+    const activitiesByStaff = activityLogs.reduce((acc, activity) => {
+      const staffId = activity.staff._id.toString();
+      if (!acc[staffId]) acc[staffId] = [];
+      acc[staffId].push({
+        action: activity.action,
+        details: activity.details,
+        createdAt: activity.createdAt
+      });
+      return acc;
+    }, {});
+
+    // Get pharmacy limits
     const pharmacy = await Pharmacy.findById(pharmacyId).select('features.maxStaff');
     const maxStaff = pharmacy?.features?.maxStaff || 10;
 
-    // Calculate staff activity status
+    // Active staff in last 30 mins
     const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
     const activeStaffCount = await User.countDocuments({
       tenantId: pharmacyId,
@@ -218,7 +239,7 @@ export const getStaffOverview = async (req, res) => {
       lastLogin: { $gte: thirtyMinutesAgo }
     });
 
-    // Format the response
+    // Compile staff overview
     const staffPerformance = staffMembers.map(staff => {
       const salesStats = salesData.find(s => s.attendantId.toString() === staff._id.toString()) || {
         totalSales: 0,
@@ -240,17 +261,18 @@ export const getStaffOverview = async (req, res) => {
           averageTransaction: Math.round(salesStats.averageTransaction || 0),
           lastSaleDate: salesStats.lastSaleDate
         },
+        recentActivities: activitiesByStaff[staff._id.toString()] || [],
         permissions: staff.permissions,
         memberSince: staff.createdAt
       };
     });
 
-    // Sort by total sales (descending)
+    // Sort by total sales descending
     staffPerformance.sort((a, b) => b.performance.totalSales - a.performance.totalSales);
 
-    // Calculate summary stats
-    const totalSales = staffPerformance.reduce((sum, staff) => sum + staff.performance.totalSales, 0);
-    const totalTransactions = staffPerformance.reduce((sum, staff) => sum + staff.performance.transactionCount, 0);
+    // Summary stats
+    const totalSales = staffPerformance.reduce((sum, s) => sum + s.performance.totalSales, 0);
+    const totalTransactions = staffPerformance.reduce((sum, s) => sum + s.performance.transactionCount, 0);
     const overallAverage = totalTransactions > 0 ? totalSales / totalTransactions : 0;
 
     res.status(200).json({
@@ -290,7 +312,137 @@ export const getStaffOverview = async (req, res) => {
   }
 };
 
+// PATCH /staff/:staffId/status
+export const updateStaffStatus = async (req, res) => {
+  try {
+    const { staffId } = req.params;
+    const { status } = req.body; // active, suspended, or frozen
 
+    const staff = await User.findOneAndUpdate(
+      { _id: staffId, tenantId: req.user.tenantId },
+      { status },
+      { new: true }
+    ).select('-password -refreshTokens');
+
+    if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
+
+    res.json({ success: true, message: `Staff account ${status}`, data: staff });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to update status', error: error.message });
+  }
+};
+
+// DELETE /staff/:staffId
+export const deleteStaff = async (req, res) => {
+  try {
+    const { staffId } = req.params;
+
+    const staff = await User.findOneAndDelete({ _id: staffId, tenantId: req.user.tenantId });
+    if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
+
+    res.json({ success: true, message: 'Staff account deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to delete staff', error: error.message });
+  }
+};
+export const getAllStaffStatsWithTrends = async (req, res) => {
+  try {
+    const { timeRange = 'month' } = req.query;
+
+    const startDate = new Date();
+    switch (timeRange) {
+      case 'week':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case 'month':
+        startDate.setMonth(startDate.getMonth() - 1);
+        break;
+      case 'quarter':
+        startDate.setMonth(startDate.getMonth() - 3);
+        break;
+      default:
+        startDate.setMonth(startDate.getMonth() - 1);
+    }
+
+    const staffList = await User.find({
+      tenantId: req.user.tenantId,
+      role: 'attendant'
+    }).select('firstName lastName email phone status lastLogin permissions createdAt');
+
+    // Aggregate performance and daily sales trends
+    const statsAgg = await Sale.aggregate([
+      {
+        $match: {
+          attendant: { $in: staffList.map(s => s._id) },
+          createdAt: { $gte: startDate },
+          status: 'completed'
+        }
+      },
+      {
+        $group: {
+          _id: { attendant: '$attendant', day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } } },
+          dailySales: { $sum: '$totalAmount' },
+          dailyTransactions: { $sum: 1 },
+          bestSale: { $max: '$totalAmount' }
+        }
+      },
+      {
+        $group: {
+          _id: '$_id.attendant',
+          totalSales: { $sum: '$dailySales' },
+          totalTransactions: { $sum: '$dailyTransactions' },
+          bestSale: { $max: '$bestSale' },
+          salesTrend: { $push: { day: '$_id.day', dailySales: '$dailySales', dailyTransactions: '$dailyTransactions' } }
+        }
+      }
+    ]);
+
+    const result = staffList.map(staff => {
+      const stats = statsAgg.find(s => s._id.toString() === staff._id.toString()) || {};
+      return {
+        _id: staff._id,
+        name: `${staff.firstName} ${staff.lastName}`,
+        email: staff.email,
+        phone: staff.phone,
+        status: staff.status,
+        permissions: staff.permissions,
+        lastLogin: staff.lastLogin,
+        memberSince: staff.createdAt,
+        performance: {
+          totalSales: stats.totalSales || 0,
+          totalTransactions: stats.totalTransactions || 0,
+          averageTransaction: Math.round((stats.totalSales || 0) / (stats.totalTransactions || 1)),
+          bestSale: stats.bestSale || 0
+        },
+        salesTrend: stats.salesTrend || []
+      };
+    });
+
+    // Sort descending by total sales
+    result.sort((a, b) => b.performance.totalSales - a.performance.totalSales);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        staff: result,
+        timeRange: {
+          value: timeRange,
+          start: startDate,
+          end: new Date()
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('All staff stats with trends error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch staff stats',
+      error: error.message
+    });
+  }
+};
+ 
 /**
  * Get staff member details with performance stats
  * @route GET /api/pharmacy/staff/:staffId/details

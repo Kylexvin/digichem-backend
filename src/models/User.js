@@ -92,7 +92,7 @@ const userSchema = new mongoose.Schema({
       type: Boolean,
       default: true
     },
-    inventory: {
+    inventory: { 
       type: String,
       enum: ['none', 'view', 'edit'],
       default: 'view'

@@ -76,18 +76,24 @@ router.post('/login',
  * @access  Public (but requires valid refresh token)
  */
 router.post('/refresh',
-  validateRefreshToken,
+  // REMOVED validateRefreshToken middleware - controller handles validation internally
   refreshToken
 );
-
 
 /**
  * @route   POST /api/auth/logout
  * @desc    Logout user (invalidate refresh token)
- * @access  Private
+ * @access  Private (but made optional in controller)
  */
 router.post('/logout',
-  authenticate,
+  // Made authenticate middleware optional for logout
+  (req, res, next) => {
+    // Try to authenticate, but continue even if it fails
+    authenticate(req, res, (err) => {
+      // Continue regardless of authentication result
+      next();
+    });
+  },
   logout
 );
 

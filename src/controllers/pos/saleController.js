@@ -2,6 +2,7 @@ import Sale from '../../models/Sale.js';
 import Product from '../../models/Product.js';
 import InventoryLog from '../../models/InventoryLog.js';
 import StockReconciliation from '../../models/StockReconciliation.js';
+import StaffActivity from '../../models/StaffActivity.js';
 
 import mongoose from 'mongoose';
 
@@ -170,21 +171,14 @@ export const processSale = async (req, res) => {
       
       if (!product) {
         await session.abortTransaction();
-        return res.status(404).json({
-          success: false,
-          message: `Product not found: ${item.productId}`
-        });
+        return res.status(404).json({ success: false, message: `Product not found: ${item.productId}` });
       }
 
       if (product.status !== 'active') {
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: `Product ${product.name} is not active`
-        });
+        return res.status(400).json({ success: false, message: `Product ${product.name} is not active` });
       }
 
-      // Calculate item total
       const itemTotal = item.quantity * product.pricing.pricePerUnit;
       totalAmount += itemTotal;
 
@@ -197,9 +191,8 @@ export const processSale = async (req, res) => {
         unitType: product.unitType
       });
 
-      // CHECK STOCK - Different behavior based on ignoreStock
+      // Stock check
       if (!ignoreStock) {
-        // Strict mode: Enforce stock levels
         if (item.quantity > product.stock.totalUnits) {
           await session.abortTransaction();
           return res.status(400).json({
@@ -208,13 +201,9 @@ export const processSale = async (req, res) => {
             suggestion: 'Set ignoreStock=true to proceed anyway'
           });
         }
-        
-        // Update stock if available
         await updateProductStock(product, item.quantity, session);
       } else {
-        // Sales-first mode: Check for actual stock shortage
         const hasStockShortage = item.quantity > product.stock.totalUnits;
-        
         if (hasStockShortage) {
           stockWarnings.push({
             product: product.name,
@@ -222,75 +211,47 @@ export const processSale = async (req, res) => {
             available: product.stock.totalUnits,
             deficit: item.quantity - product.stock.totalUnits
           });
-        }
-        
-        // Try to update stock - this might fail for severe shortages
-        try {
+        } else {
           await updateProductStock(product, item.quantity, session);
-        } catch (stockError) {
-          // Only create warning if the error is due to insufficient stock
-          if (stockError.message.includes('not enough') || stockError.message.includes('insufficient')) {
-            if (!hasStockShortage) {
-              // This handles cases where updateProductStock fails internally
-              const available = product.stock.totalUnits || 0;
-              stockWarnings.push({
-                product: product.name,
-                requested: item.quantity,
-                available: available,
-                deficit: item.quantity - available
-              });
-            }
-          }
-          console.warn('Stock update issue but sale proceeding:', stockError.message);
         }
       }
     }
 
-    // Validate payment
     const changeDue = Math.max(0, amountPaid - totalAmount);
-    const subtotal = totalAmount;
-    
     if (amountPaid < totalAmount) {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: `Insufficient payment. Total: ${totalAmount}, Paid: ${amountPaid}`
-      });
+      return res.status(400).json({ success: false, message: `Insufficient payment. Total: ${totalAmount}, Paid: ${amountPaid}` });
     }
 
-    // Generate receipt number
     const receiptNumber = generateReceiptNumber();
 
-    // Create sale record
     const sale = new Sale({
       pharmacy: req.user.tenantId,
       attendant: req.user.id,
       items: saleItems,
-      subtotal: subtotal,
-      totalAmount: totalAmount,
-      amountPaid: amountPaid,
-      changeDue: changeDue,
+      subtotal: totalAmount,
+      totalAmount,
+      amountPaid,
+      changeDue,
       paymentMethod: paymentMethod || 'cash',
       status: 'completed',
       createdBy: req.user.id,
-      receiptNumber: receiptNumber,
+      receiptNumber,
       metadata: {
-        ignoreStock: ignoreStock,
-        stockWarnings: stockWarnings
+        ignoreStock,
+        stockWarnings
       }
     });
 
     await sale.save({ session });
 
-    // Create reconciliation records ONLY if there are actual stock warnings
     if (ignoreStock && stockWarnings.length > 0) {
       await createReconciliationRecords(sale, stockWarnings, session);
     }
 
-    // Log inventory changes
+    // Inventory logs
     for (const item of items) {
       const product = await Product.findById(item.productId).session(session);
-      
       await InventoryLog.create([{
         product: product._id,
         pharmacy: req.user.tenantId,
@@ -306,6 +267,30 @@ export const processSale = async (req, res) => {
         }
       }], { session });
     }
+
+    // Staff activity log (safe, won’t break main flow)
+    try {
+  await StaffActivity.log({
+    tenantId: req.user.tenantId,
+    staff: req.user.id,
+    action: 'sale_completed', // must match enum
+    details: {
+      saleId: sale._id,
+      items: saleItems,
+      totalAmount,
+      amountPaid,
+      changeDue,
+      paymentMethod
+    },
+    deviceInfo: {
+      userAgent: req.get('User-Agent'),
+      ip: req.ip,
+      location: req.get('CF-IPCountry') || 'Unknown'
+    }
+  });
+} catch (err) {
+  console.warn('Failed to log staff activity:', err.message);
+}
 
     await session.commitTransaction();
     session.endSession();
@@ -329,7 +314,6 @@ export const processSale = async (req, res) => {
       }
     };
 
-    // Add warnings if any
     if (stockWarnings.length > 0) {
       response.warnings = {
         message: 'Stock levels exceeded. Please reconcile inventory.',
@@ -342,12 +326,7 @@ export const processSale = async (req, res) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    
-    res.status(500).json({
-      success: false,
-      message: 'Failed to process sale',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Failed to process sale', error: error.message });
   }
 };
 

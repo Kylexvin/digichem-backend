@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import morgan from 'morgan'; // Import morgan
 import routes from './routes/index.js';
 import authRoutes from './routes/auth.js';
 import applicationRoutes from './routes/public.js';
@@ -12,14 +13,18 @@ import dashboard from './routes/dashboard.js';
 
 const app = express(); 
 
+// Add morgan for HTTP request logging
+app.use(morgan('dev'));
+
 // Fix CORS configuration 
 app.use(cors({
-  origin: 'http://localhost:3000', // Your React app URL
-  credentials: true, // Allow cookies/auth headers
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  origin: 'http://localhost:3000',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // Add PATCH
   allowedHeaders: ['Content-Type', 'Authorization']
-}));   
+}));
 
+ 
 app.use(express.json());
  
 // Routes 

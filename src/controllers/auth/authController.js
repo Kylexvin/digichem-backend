@@ -5,7 +5,7 @@ import {
   createTokenResponse 
 } from '../../utils/generateToken.js';
 import { validationResult } from 'express-validator';
-
+import StaffActivity from '../../models/StaffActivity.js';
 /** 
  * Register Super Admin (First time setup only)
  * POST /api/auth/register-super-admin
@@ -106,7 +106,7 @@ export const registerSuperAdmin = async (req, res) => {
  */
 export const login = async (req, res) => {
   try {
-    // Check validation errors
+    // Validation check
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -118,7 +118,7 @@ export const login = async (req, res) => {
 
     const { email, password } = req.body;
 
-    // Find user and include password for comparison
+    // Find user with password and login metadata
     const user = await User.findOne({ email }).select('+password +loginAttempts +lockUntil');
 
     if (!user) {
@@ -132,7 +132,7 @@ export const login = async (req, res) => {
     if (user.isLocked) {
       return res.status(423).json({
         success: false,
-        message: 'Account is temporarily locked due to too many failed login attempts. Please try again later.',
+        message: 'Account temporarily locked due to failed login attempts.',
         lockUntil: user.lockUntil
       });
     }
@@ -147,11 +147,8 @@ export const login = async (req, res) => {
 
     // Compare password
     const isPasswordValid = await user.comparePassword(password);
-
     if (!isPasswordValid) {
-      // Handle failed login
       await user.handleFailedLogin();
-      
       return res.status(401).json({
         success: false,
         message: 'Invalid email or password',
@@ -159,26 +156,40 @@ export const login = async (req, res) => {
       });
     }
 
-    // Handle successful login
+    // Successful login
     await user.handleSuccessfulLogin();
 
-    // Generate device info
+    // Device info
     const deviceInfo = {
       userAgent: req.get('User-Agent'),
       ip: req.ip,
       location: req.get('CF-IPCountry') || 'Unknown'
     };
 
-    // Generate tokens using utils (consistent approach)
+    // Generate tokens
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
 
-    // Add refresh token to user's collection and save
+    // Save refresh token
     user.addRefreshToken(refreshToken, deviceInfo);
     await user.save();
 
-    // Create response
-    const response = {
+    // Record login in StaffActivity ONLY if attendant
+    if (user.role === 'attendant') {
+  try {
+    await StaffActivity.create({
+      staff: user._id,
+      tenantId: user.tenantId, // <-- use tenantId, not tenant
+      action: 'login',
+      deviceInfo
+    });
+  } catch (err) {
+    console.error('Failed to log staff login:', err);
+  }
+}
+
+    // Response
+    res.status(200).json({
       success: true,
       message: 'Login successful',
       tokens: {
@@ -198,9 +209,7 @@ export const login = async (req, res) => {
         status: user.status
       },
       deviceInfo
-    };
-
-    res.status(200).json(response);
+    });
 
   } catch (error) {
     console.error('Login error:', error);
@@ -220,11 +229,55 @@ export const login = async (req, res) => {
  */
 export const refreshToken = async (req, res) => {
   try {
-    const user = req.user; // set by validateRefreshToken middleware
-    const oldRefreshToken = req.refreshToken;
+    // Get refresh token from Authorization header or request body
+    let refreshToken = req.headers.authorization?.replace('Bearer ', '') || req.body.refreshToken;
+    
+    if (!refreshToken) {
+      return res.status(401).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
+    }
 
-    // Remove the old refresh token
-    user.removeRefreshToken(oldRefreshToken);
+    // Verify refresh token
+    let decoded;
+    try {
+      decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    } catch (error) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired refresh token'
+      });
+    }
+
+    // Find user and check if refresh token exists
+    const user = await User.findById(decoded.id);
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if user is active
+    if (user.status !== 'active') {
+      return res.status(403).json({
+        success: false,
+        message: 'Account is not active'
+      });
+    }
+
+    // Check if refresh token exists in user's token list
+    const tokenExists = user.refreshTokens.some(tokenObj => tokenObj.token === refreshToken);
+    if (!tokenExists) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid refresh token'
+      });
+    }
+
+    // Remove old refresh token
+    user.removeRefreshToken(refreshToken);
 
     // Create new device info
     const deviceInfo = {
@@ -233,22 +286,34 @@ export const refreshToken = async (req, res) => {
       location: req.get('CF-IPCountry') || 'Unknown'
     };
 
-    // Generate new refresh token
-    const newRefreshToken = user.generateRefreshToken(deviceInfo);
+    // Generate new tokens
+    const newAccessToken = generateAccessToken(user);
+    const newRefreshToken = generateRefreshToken(user);
 
-    // Save user with updated refresh token list
+    // Add new refresh token to user
+    user.addRefreshToken(newRefreshToken, deviceInfo);
     await user.save();
 
-    // Build token response with fresh access token
-    const tokenResponse = createTokenResponse(user, deviceInfo);
-
-    // Overwrite refreshToken in response (so frontend gets the correct one)
-    tokenResponse.tokens.refreshToken = newRefreshToken;
-
-    return res.json({
+    // Return response
+    res.json({
       success: true,
       message: 'Token refreshed successfully',
-      ...tokenResponse
+      tokens: {
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+        tokenType: 'Bearer',
+        expiresIn: process.env.JWT_EXPIRES_IN || '15m'
+      },
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+        tenantId: user.tenantId,
+        permissions: user.permissions,
+        status: user.status
+      }
     });
 
   } catch (error) {
@@ -261,23 +326,44 @@ export const refreshToken = async (req, res) => {
   }
 };
 
-
 /**
  * Logout (invalidate refresh token)
  * POST /api/auth/logout
  */
 export const logout = async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    // Get refresh token from body or Authorization header
+    let refreshToken = req.body.refreshToken || req.headers.authorization?.replace('Bearer ', '');
     
-    if (refreshToken) {
-      const user = await User.findById(req.user.id);
-      if (user) {
-        user.removeRefreshToken(refreshToken);
-        await user.save();
+    // Try to find user by refresh token if no authenticated user
+    let userId = req.user?.id;
+    
+    if (!userId && refreshToken) {
+      try {
+        const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+        userId = decoded.id;
+      } catch (error) {
+        // If token is invalid, we can still "succeed" at logout
+        console.log('Invalid refresh token during logout, proceeding anyway');
+      }
+    }
+    
+    // If we have a user ID, try to remove the refresh token
+    if (userId && refreshToken) {
+      try {
+        const user = await User.findById(userId);
+        if (user) {
+          user.removeRefreshToken(refreshToken);
+          await user.save();
+          console.log('Refresh token removed from user');
+        }
+      } catch (error) {
+        console.error('Error removing refresh token:', error);
+        // Don't fail logout if token removal fails
       }
     }
 
+    // Always return success for logout
     res.json({
       success: true,
       message: 'Logged out successfully'
@@ -285,10 +371,10 @@ export const logout = async (req, res) => {
 
   } catch (error) {
     console.error('Logout error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Logout failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    // Still return success for logout - we want client to clear its tokens
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
     });
   }
 };
