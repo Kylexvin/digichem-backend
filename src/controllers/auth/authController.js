@@ -6,6 +6,7 @@ import {
 } from '../../utils/generateToken.js';
 import { validationResult } from 'express-validator';
 import StaffActivity from '../../models/StaffActivity.js';
+import jwt from 'jsonwebtoken';
 /** 
  * Register Super Admin (First time setup only)
  * POST /api/auth/register-super-admin
@@ -223,10 +224,6 @@ export const login = async (req, res) => {
 
 
 
-/**
- * Refresh access token
- * POST /api/auth/refresh
- */
 export const refreshToken = async (req, res) => {
   try {
     // Get refresh token from Authorization header or request body
@@ -239,10 +236,10 @@ export const refreshToken = async (req, res) => {
       });
     }
 
-    // Verify refresh token
+    // Verify refresh token using your utility function
     let decoded;
     try {
-      decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+      decoded = verifyToken(refreshToken, 'refresh');
     } catch (error) {
       return res.status(401).json({
         success: false,
@@ -250,8 +247,8 @@ export const refreshToken = async (req, res) => {
       });
     }
 
-    // Find user and check if refresh token exists
-    const user = await User.findById(decoded.id);
+    // Find user using userId from token
+    const user = await User.findById(decoded.userId);
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -269,6 +266,7 @@ export const refreshToken = async (req, res) => {
 
     // Check if refresh token exists in user's token list
     const tokenExists = user.refreshTokens.some(tokenObj => tokenObj.token === refreshToken);
+    
     if (!tokenExists) {
       return res.status(401).json({
         success: false,
@@ -290,7 +288,7 @@ export const refreshToken = async (req, res) => {
     const newAccessToken = generateAccessToken(user);
     const newRefreshToken = generateRefreshToken(user);
 
-    // Add new refresh token to user
+    // Add new refresh token
     user.addRefreshToken(newRefreshToken, deviceInfo);
     await user.save();
 
@@ -325,7 +323,6 @@ export const refreshToken = async (req, res) => {
     });
   }
 };
-
 /**
  * Logout (invalidate refresh token)
  * POST /api/auth/logout
